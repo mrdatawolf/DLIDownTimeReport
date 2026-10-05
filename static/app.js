@@ -66,6 +66,8 @@ $('files').addEventListener('change',async event=>{
   $('status').textContent=messages.join(' · '); $('files').disabled=false; $('files').value='';
   const current=$('date').value; $('date').replaceChildren(new Option('All dates','')); await load(); $('date').value=current; await load();
 });
+// Fresh page loads start on the last 30 days; Reset all filters clears the range.
+setDateRange('30');
 load().catch(e=>$('status').textContent=e.message);
 
 async function loadIngestion() {
@@ -271,16 +273,19 @@ function renderTrends() {
 $('trend-metric').addEventListener('change',renderTrends);
 $('trend-style').addEventListener('change',renderTrends);
 $('page-filters').addEventListener('submit',event=>event.preventDefault());
+function setDateRange(range) {
+  const today=new Date();
+  const from=new Date(today.getFullYear(),today.getMonth(),today.getDate());
+  if(range === 'ytd') from.setMonth(0,1);
+  else from.setDate(from.getDate()-(Number(range)-1));
+  const dateValue=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  $('trend-from').value=dateValue(from);
+  $('trend-to').value=dateValue(today);
+  $('date').value='';
+}
 for(const button of document.querySelectorAll('[data-date-range]')) {
   button.addEventListener('click',()=>{
-    const today=new Date();
-    const from=new Date(today.getFullYear(),today.getMonth(),today.getDate());
-    if(button.dataset.dateRange === 'ytd') from.setMonth(0,1);
-    else from.setDate(from.getDate()-(Number(button.dataset.dateRange)-1));
-    const dateValue=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-    $('trend-from').value=dateValue(from);
-    $('trend-to').value=dateValue(today);
-    $('date').value='';
+    setDateRange(button.dataset.dateRange);
     load().catch(e=>$('status').textContent=e.message);
   });
 }
@@ -288,7 +293,7 @@ $('page-filters').addEventListener('input',event=>{
   if(event.target.tagName !== 'SELECT') load().catch(e=>$('status').textContent=e.message);
 });
 $('page-filters').addEventListener('reset',()=>setTimeout(()=>load().catch(e=>$('status').textContent=e.message),0));
-const tabs=[$('raw-tab'),$('trends-tab')];
+const tabs=[$('trends-tab'),$('raw-tab')];
 function selectTab(tab) {
   for(const item of tabs) {const active=item===tab; item.setAttribute('aria-selected',String(active)); item.tabIndex=active ? 0 : -1; $(item.getAttribute('aria-controls')).hidden=!active;}
 }
