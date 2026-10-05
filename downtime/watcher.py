@@ -13,7 +13,8 @@ LEDGER = '''CREATE TABLE IF NOT EXISTS file_ingestion (
 );'''
 
 
-def scan(db_path, folder, settle_seconds=10, retry_failed=False):
+def scan(db_path, folder, settle_seconds=10, retry_failed=False, progress=None):
+    """Process new or changed PDFs; progress, if given, receives each result as it happens."""
     folder = Path(folder)
     if not folder.is_dir():
         raise ValueError(f'Report folder does not exist or is not a directory: {folder}')
@@ -60,6 +61,8 @@ def scan(db_path, folder, settle_seconds=10, retry_failed=False):
                 results.append(dict(path=name, **result))
             except OSError as exc:
                 results.append(dict(path=name, status='unavailable', error=str(exc)))
+            if progress and results and results[-1]['path'] == name:
+                progress(results[-1])
     finally:
         db.close()
     return results

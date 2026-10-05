@@ -6,7 +6,10 @@ import io
 import json
 import tempfile
 import ipaddress
+import socket
 import threading
+import time
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +19,26 @@ from downtime.config import load_env, resolve_path
 from downtime.watcher import LEDGER, scan, watch
 
 ROOT = Path(__file__).resolve().parent
+
+def server_urls(host, port):
+    """Browser URLs for the bound address; 0.0.0.0 lists this computer's IPv4 addresses."""
+    if host != '0.0.0.0':
+        return [f'http://{host}:{port}']
+    addresses = set()
+    try:
+        addresses.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except OSError:
+        pass
+    try:
+        # Connecting a UDP socket sends nothing; it only selects the primary outbound address.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(('192.0.2.1', 80))
+            addresses.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    network = sorted((a for a in addresses if not a.startswith('127.')), key=ipaddress.ip_address)
+    return [f'http://127.0.0.1:{port}'] + [f'http://{a}:{port}' for a in network]
+
 
 class Handler(BaseHTTPRequestHandler):
     def send(self, body, content_type='application/json', status=200):
@@ -121,9 +144,23 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    results = scan(args.db, folder, settle, args.retry_failed)
-    for result in results:
-        print(json.dumps(result), flush=True)
+    print(f'Scanning {folder} for new or changed PDF reports. Large folders can take a while; '
+          'the server starts when this finishes.', flush=True)
+    started = time.monotonic()
+    processed = 0
+
+    def show(result):
+        nonlocal processed
+        processed += 1
+        path = Path(result['path'])
+        name = path.relative_to(folder.resolve()) if path.is_relative_to(folder.resolve()) else path
+        error = f" - {result['error']}" if result.get('error') else ''
+        print(f"  [{processed}] {result['status']:<11} {name}{error}", flush=True)
+
+    results = scan(args.db, folder, settle, args.retry_failed, progress=show)
+    counts = Counter(result['status'] for result in results)
+    summary = ', '.join(f'{count} {status}' for status, count in sorted(counts.items())) or 'no new or changed files'
+    print(f'Initial scan finished in {time.monotonic() - started:.1f}s: {summary}.', flush=True)
     if args.import_only:
         return 1 if any(r['status'] in ('failed', 'unavailable') for r in results) else 0
     server = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -132,7 +169,13 @@ def main():
     stop = threading.Event()
     worker = threading.Thread(target=watch, args=(args.db, folder, interval, settle, stop), daemon=True)
     worker.start()
-    print(f'Downtime Tracker listening on {args.host}:{args.port}; watching {folder} every {interval:g}s', flush=True)
+    scope = ' (all IPv4 interfaces)' if args.host == '0.0.0.0' else ''
+    urls = server_urls(args.host, args.port)
+    print(f'\nDowntime Tracker is up, listening on {args.host}:{args.port}{scope}', flush=True)
+    for label, url in zip(['Open:'] + [''] * len(urls), urls):
+        print(f'  {label:<6}{url}', flush=True)
+    print(f'  Watching {folder} every {interval:g}s', flush=True)
+    print('  Press Ctrl+C to stop.\n', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -20,4 +20,5 @@ if ! command -v pdftotext >/dev/null 2>&1; then
     exit 1
 fi
 
+echo 'Starting Downtime Tracker...'
 exec "$python_command" app.py "$@"

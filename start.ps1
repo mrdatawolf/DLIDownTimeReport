@@ -29,6 +29,7 @@ try {
     if (-not (Get-Command pdftotext -CommandType Application -ErrorAction SilentlyContinue)) {
         throw 'pdftotext is required. Install Poppler for Windows and add its bin or Library\bin directory to PATH.'
     }
+    Write-Host 'Starting Downtime Tracker...'
     & $pythonCommand @pythonPrefix (Join-Path $PSScriptRoot 'app.py') @appArguments
     $exitCode = $LASTEXITCODE
 }
