@@ -4,6 +4,9 @@ import argparse
 import csv
 import io
 import json
+import logging
+import sys
+from logging.handlers import RotatingFileHandler
 import tempfile
 import ipaddress
 import socket
@@ -19,6 +22,8 @@ from downtime.config import load_env, resolve_path
 from downtime.watcher import LEDGER, scan, watch
 
 ROOT = Path(__file__).resolve().parent
+ACCESS_LOG = ROOT / 'logs' / 'access.log'
+access_log = logging.getLogger('downtime.access')
 
 def server_urls(host, port):
     """Browser URLs for the bound address; 0.0.0.0 lists this computer's IPv4 addresses."""
@@ -41,6 +46,14 @@ def server_urls(host, port):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Requests go to the access log file; errors also print to the terminal.
+    def log_message(self, format, *args):
+        access_log.info('%s - %s', self.address_string(), format % args)
+
+    def log_error(self, format, *args):
+        self.log_message(format, *args)
+        print(f'{self.address_string()} - {format % args}', file=sys.stderr, flush=True)
+
     def send(self, body, content_type='application/json', status=200):
         if not isinstance(body, bytes):
             body = body.encode()
@@ -167,6 +180,12 @@ def main():
     print(f'Initial scan finished in {time.monotonic() - started:.1f}s: {summary}.', flush=True)
     if args.import_only:
         return 1 if any(r['status'] in ('failed', 'unavailable') for r in results) else 0
+    ACCESS_LOG.parent.mkdir(exist_ok=True)
+    log_file = RotatingFileHandler(ACCESS_LOG, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
+    log_file.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+    access_log.addHandler(log_file)
+    access_log.setLevel(logging.INFO)
+    access_log.propagate = False
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.db_path = args.db
     server.report_dir = folder
@@ -179,6 +198,7 @@ def main():
     for label, url in zip(['Open:'] + [''] * len(urls), urls):
         print(f'  {label:<6}{url}', flush=True)
     print(f'  Watching {folder} every {interval:g}s', flush=True)
+    print(f'  Request log: {ACCESS_LOG}', flush=True)
     print('  Press Ctrl+C to stop.\n', flush=True)
     try:
         server.serve_forever()
