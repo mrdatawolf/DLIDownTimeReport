@@ -30,7 +30,7 @@ async function load() {
   for(const s of data.shifts) {
     const d=s.downtime, p=s.production?.numeric;
     const row=document.createElement('tr');
-    for(const value of [`${s.date} · ${s.shift}`,d?number(d.downtime_minutes)+' min':'—',d?number(100*d.uptime_minutes/d.shift_minutes)+'%':'—',number(p?.['Total Logs'],0),p?number(p['Total Brd Footage'],0)+' BF':'—',p?'$'+number(p['Total Board Value']):'—']) row.append(element('td',value));
+    for(const value of [`${s.date} · ${s.shift || s.site}`,d?number(d.downtime_minutes)+' min':'—',d?number(100*d.uptime_minutes/d.shift_minutes)+'%':'—',number(p?.['Total Logs'],0),p?number(p['Total Brd Footage'],0)+' BF':'—',p?'$'+number(p['Total Board Value']):'—']) row.append(element('td',value));
     $('shifts').append(row);
   }
   if(!data.shifts.length) {
@@ -132,7 +132,7 @@ function renderDowntimePie(causes) {
   layout.append(svg,legend); container.append(element('p',`${number(total)} total downtime minutes`,'muted'),layout);
 }
 function showShift(s) {
-  const detail=$('trend-detail'); detail.replaceChildren(element('h3',`${s.date} · Shift ${s.shift} · ${s.site}`));
+  const detail=$('trend-detail'); detail.replaceChildren(element('h3',`${s.date} · ${shiftLabel(s)}`));
   const metrics=shiftMetrics(s);
   detail.append(element('p',trendMetrics.map(m=>`${m.label}: ${metrics[m.key] == null ? '—' : number(metrics[m.key])+' '+m.unit}`).join(' · ')));
   for(const source of s.sources) {
@@ -161,11 +161,13 @@ function periodDate(date, monthly) {
   day.setUTCDate(day.getUTCDate()-(day.getUTCDay()+6)%7);
   return day.toISOString().slice(0,10);
 }
+// The site is the same for every report, so it is shown only when a shift is missing.
+function shiftLabel(s) { return s.shift ? `Shift ${s.shift}` : s.site; }
 function showPeriod(label, items, metric) {
   const detail=$('trend-detail');
   detail.replaceChildren(element('h3',label),element('p',`${metric.label}: ${number(metricAverage(items,metric))} ${metric.unit} · ${items.length} shifts. Select a shift to inspect its reports.`));
   for(const s of items) {
-    const button=element('button',`${s.date} · ${s.site} · Shift ${s.shift}`);
+    const button=element('button',`${s.date} · ${shiftLabel(s)}`);
     button.addEventListener('click',()=>showShift(s)); detail.append(button);
   }
 }
@@ -178,7 +180,7 @@ function renderPeriodChart(card, shifts, metric, style) {
   const monthly=style==='monthly', heatmap=style==='heatmap';
   const groups=new Map(), periods=new Map();
   for(const s of shifts) {
-    const label=`${s.site} · Shift ${s.shift} · ${s.start_time}`, date=periodDate(s.date,monthly);
+    const label=`${shiftLabel(s)} · ${s.start_time}`, date=periodDate(s.date,monthly);
     if(!groups.has(label)) groups.set(label,new Map());
     if(!groups.get(label).has(date)) groups.get(label).set(date,[]);
     groups.get(label).get(date).push(s); periods.set(date,true);
@@ -230,7 +232,7 @@ function renderTrends() {
   const first=timestamp(shifts[0]), last=timestamp(shifts[shifts.length-1]);
   const x=s=>first===last ? 320 : 72+(timestamp(s)-first)/(last-first)*496;
   const groups=new Map();
-  for(const s of shifts) { const key=`${s.site} · Shift ${s.shift} · ${s.start_time}`; if(!groups.has(key)) groups.set(key,[]); groups.get(key).push(s); }
+  for(const s of shifts) { const key=`${shiftLabel(s)} · ${s.start_time}`; if(!groups.has(key)) groups.set(key,[]); groups.get(key).push(s); }
   const startYear=shifts[0].date.slice(0,4), endYear=shifts[shifts.length-1].date.slice(0,4);
   const years=startYear===endYear ? startYear : `${startYear}–${endYear}`;
   for(const metric of trendMetrics.filter(metric=>metric.key===$('trend-metric').value)) {
@@ -260,7 +262,7 @@ function renderTrends() {
     // Points follow all lines so every point remains clickable.
     for(const s of shifts) {
       const value=shiftMetrics(s)[metric.key]; if(value==null) continue;
-      const description=`${s.date}, shift ${s.shift}, ${s.site}: ${number(value)} ${metric.unit}`;
+      const description=`${s.date}, ${shiftLabel(s)}: ${number(value)} ${metric.unit}`;
       const point=svgElement('circle',{cx:x(s),cy:y(value),r:6,fill:metric.color,stroke:'white','stroke-width':2,tabindex:0,role:'button','aria-label':description,class:'chart-point'});
       point.append(svgElement('title',{},description));
       point.addEventListener('click',()=>showShift(s));
