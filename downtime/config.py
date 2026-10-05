@@ -14,8 +14,11 @@ def load_env(path):
             key, sep, value = line.partition('=')
             if not sep or not key.strip().isidentifier():
                 raise ValueError(f'{path}:{number}: expected KEY=value')
-            tokens = shlex.split(value, comments=True)
-            values[key.strip()] = ' '.join(tokens)
+            # Backslashes stay literal so Windows paths like C:\Reports\ work.
+            lexer = shlex.shlex(value, posix=True)
+            lexer.whitespace_split = True
+            lexer.escape = ''
+            values[key.strip()] = ' '.join(lexer)
     return {**values, **os.environ}
 
 

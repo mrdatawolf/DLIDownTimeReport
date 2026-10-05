@@ -66,6 +66,11 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(settings['PORT'], '9090')
         self.assertEqual(settings['HOST'], '0.0.0.0')
         self.assertEqual(resolve_path(self.root, settings['REPORTS_DIR']), self.root / 'folder with spaces')
+        env.write_text('REPORTS_DIR=C:\\Reports\\Daily\\\nDB_PATH="C:\\My Data\\db.sqlite3"\n')
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_env(env)
+        self.assertEqual(settings['REPORTS_DIR'], 'C:\\Reports\\Daily\\')
+        self.assertEqual(settings['DB_PATH'], 'C:\\My Data\\db.sqlite3')
         env.write_text('invalid line')
         with self.assertRaises(ValueError):
             load_env(env)
