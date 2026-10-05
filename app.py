@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Local, dependency-free ingestion and reporting server."""
+import argparse
+import csv
+import io
+import json
+import tempfile
+import ipaddress
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from downtime.ingest import connect, ingest
+from downtime.reports import report
+from downtime.config import load_env, resolve_path
+from downtime.watcher import LEDGER, scan, watch
+
+ROOT = Path(__file__).resolve().parent
+
+class Handler(BaseHTTPRequestHandler):
+    def send(self, body, content_type='application/json', status=200):
+        if not isinstance(body, bytes):
+            body = body.encode()
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        query = parse_qs(url.query)
+        with connect(self.server.db_path) as db:
+            if url.path in ('/api/reports', '/api/export.csv'):
+                try:
+                    data = report(db, query.get('date', [''])[0], query.get('shift', [''])[0],
+                                  {key: values[0] for key, values in query.items() if key in
+                                   ('from', 'to', 'min_downtime', 'max_downtime', 'min_availability', 'max_availability', 'min_logs', 'min_board_feet')})
+                except ValueError:
+                    return self.send(json.dumps(dict(error='Invalid report filters.')), status=400)
+                if url.path.endswith('.csv'):
+                    stream = io.StringIO()
+                    writer = csv.writer(stream)
+                    writer.writerow(['site', 'date', 'shift', 'area', 'category', 'cause', 'occurrences', 'minutes'])
+                    for s in data['shifts']:
+                        for r in (s['downtime'] or {}).get('rows', []):
+                            values = [s['site'], s['date'], s['shift'], r['area'], r['category'], r['cause'], r['occurrences'], r['minutes']]
+                            writer.writerow(["'" + v if isinstance(v, str) and v.startswith(('=', '+', '-', '@')) else v for v in values])
+                    self.send(stream.getvalue(), 'text/csv; charset=utf-8')
+                else:
+                    self.send(json.dumps(data))
+            elif url.path == '/api/ingestion':
+                db.execute(LEDGER)
+                rows = [dict(r) for r in db.execute('SELECT * FROM file_ingestion ORDER BY checked_at DESC, path')]
+                self.send(json.dumps(dict(folder=str(self.server.report_dir), files=rows)))
+            elif url.path.startswith('/api/source/'):
+                try:
+                    row = db.execute('SELECT raw_text FROM documents WHERE id=?', (int(url.path.rsplit('/', 1)[1]),)).fetchone()
+                except ValueError:
+                    row = None
+                self.send(row['raw_text'] if row else 'Source not found', 'text/plain; charset=utf-8', 200 if row else 404)
+            elif url.path in ('/', '/app.js', '/style.css'):
+                name = {'/':'index.html', '/app.js':'app.js', '/style.css':'style.css'}[url.path]
+                mime = {'/':'text/html', '/app.js':'text/javascript', '/style.css':'text/css'}[url.path]
+                self.send((ROOT / 'static' / name).read_bytes(), mime + '; charset=utf-8')
+            else:
+                self.send('Not found', 'text/plain', 404)
+
+    def do_POST(self):
+        if urlparse(self.path).path != '/api/import':
+            return self.send('{}', status=404)
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if size <= 0 or size > 20 * 1024 * 1024:
+                raise ValueError('PDF must be between 1 byte and 20 MB.')
+            body = self.rfile.read(size)
+            if not body.startswith(b'%PDF-'):
+                raise ValueError('Upload a PDF file.')
+            filename = Path(parse_qs(urlparse(self.path).query).get('filename', ['upload.pdf'])[0]).name
+            with tempfile.NamedTemporaryFile(suffix='.pdf') as file:
+                file.write(body)
+                file.flush()
+                with connect(self.server.db_path) as db:
+                    result = ingest(db, file.name, filename)
+            self.send(json.dumps(result))
+        except (ValueError, TimeoutError) as exc:
+            self.send(json.dumps(dict(error=str(exc))), status=400)
+        except Exception as exc:
+            self.log_error('%s', exc)
+            self.send(json.dumps(dict(error='Import failed; see server log.')), status=500)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--env-file', type=Path, default=ROOT / '.env')
+    parser.add_argument('--db')
+    parser.add_argument('--host')
+    parser.add_argument('--port', type=int)
+    parser.add_argument('--import-dir', type=Path)
+    parser.add_argument('--scan-interval', type=float)
+    parser.add_argument('--settle-seconds', type=float)
+    parser.add_argument('--import-only', action='store_true')
+    parser.add_argument('--retry-failed', action='store_true', help='Retry unchanged failed files during the initial scan')
+    args = parser.parse_args()
+    try:
+        settings = load_env(args.env_file)
+        args.db = str(resolve_path(ROOT, args.db or settings.get('DB_PATH', 'data/downtime.sqlite3')))
+        args.host = args.host or settings.get('HOST', '127.0.0.1')
+        address = ipaddress.ip_address(args.host)
+        if address.version != 4:
+            raise ValueError('HOST must be a valid IPv4 address.')
+        args.port = args.port if args.port is not None else int(settings.get('PORT', '8080'))
+        interval = args.scan_interval if args.scan_interval is not None else float(settings.get('SCAN_INTERVAL_SECONDS', '30'))
+        settle = args.settle_seconds if args.settle_seconds is not None else float(settings.get('FILE_SETTLE_SECONDS', '10'))
+        if not 1 <= args.port <= 65535 or not 1 <= interval < float('inf') or not 0 <= settle < float('inf'):
+            raise ValueError('PORT must be 1–65535; scan interval at least 1 second; settle seconds nonnegative and finite.')
+        folder = resolve_path(ROOT, str(args.import_dir or settings.get('REPORTS_DIR', 'Samples')))
+        if not folder.is_dir():
+            raise ValueError(f'Report folder does not exist: {folder}')
+    except ValueError as exc:
+        parser.error(str(exc))
+    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    results = scan(args.db, folder, settle, args.retry_failed)
+    for result in results:
+        print(json.dumps(result), flush=True)
+    if args.import_only:
+        return 1 if any(r['status'] in ('failed', 'unavailable') for r in results) else 0
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.db_path = args.db
+    server.report_dir = folder
+    stop = threading.Event()
+    worker = threading.Thread(target=watch, args=(args.db, folder, interval, settle, stop), daemon=True)
+    worker.start()
+    print(f'Downtime Tracker listening on {args.host}:{args.port}; watching {folder} every {interval:g}s', flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        worker.join(timeout=35)
+        server.server_close()
+    return 0
+
+if __name__ == '__main__':
+    raise SystemExit(main())
