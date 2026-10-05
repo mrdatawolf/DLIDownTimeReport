@@ -144,8 +144,9 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    after = 'the app exits' if args.import_only else 'the server starts'
     print(f'Scanning {folder} for new or changed PDF reports. Large folders can take a while; '
-          'the server starts when this finishes.', flush=True)
+          f'{after} when this finishes.', flush=True)
     started = time.monotonic()
     processed = 0
 
