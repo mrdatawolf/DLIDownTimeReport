@@ -24,19 +24,30 @@ class WatcherTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_restart_rename_and_nested_files(self):
+    def test_restart_rename_and_skipped_subfolders(self):
         sub = self.folder / 'archive'
         sub.mkdir()
-        target = sub / 'report.PDF'
+        shutil.copyfile(SAMPLE, sub / 'ignored.pdf')
+        target = self.folder / 'report.PDF'
         shutil.copyfile(SAMPLE, target)
         self.assertEqual(scan(self.db, self.folder, 0)[0]['status'], 'imported')
         with patch('downtime.watcher.ingest', side_effect=AssertionError('Reparsed unchanged file')):
             self.assertEqual(scan(self.db, self.folder, 0), [])
-        target.rename(sub / 'renamed.pdf')
+        target.rename(self.folder / 'renamed.pdf')
         self.assertEqual(scan(self.db, self.folder, 0)[0]['status'], 'duplicate')
         db = connect(self.db)
         self.assertEqual(db.execute('SELECT COUNT(*) FROM documents').fetchone()[0], 1)
         db.close()
+
+    def test_progress_and_heartbeat(self):
+        (self.folder / 'empty').mkdir()
+        (self.folder / 'notes.txt').write_text('not a report')
+        shutil.copyfile(SAMPLE, self.folder / 'report.pdf')
+        shown, beats = [], []
+        results = scan(self.db, self.folder, 0, progress=shown.append, heartbeat=beats.append, beat_seconds=0)
+        self.assertEqual(shown, results)
+        self.assertEqual(results[0]['path'], str((self.folder / 'report.pdf').resolve()))
+        self.assertEqual(beats, [0])
 
     def test_failure_continues_and_can_retry_or_change(self):
         bad = self.folder / 'a-bad.pdf'

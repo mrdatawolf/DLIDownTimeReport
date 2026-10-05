@@ -1,6 +1,7 @@
 """Persistent folder ingestion; stable files only, one bad PDF never stops a batch."""
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from downtime.ingest import connect, ingest
@@ -13,21 +14,46 @@ LEDGER = '''CREATE TABLE IF NOT EXISTS file_ingestion (
 );'''
 
 
-def scan(db_path, folder, settle_seconds=10, retry_failed=False, progress=None):
-    """Process new or changed PDFs; progress, if given, receives each result as it happens."""
+def pdf_entries(folder):
+    """Yield PDF DirEntries directly inside folder, in name order; subfolders are not scanned.
+
+    On Windows, DirEntry.stat() is served from the directory listing, so unchanged
+    files on a network share cost no extra round trips.
+    """
+    with os.scandir(folder) as listing:
+        entries = sorted(listing, key=lambda entry: entry.name)
+    for entry in entries:
+        try:
+            if entry.name.lower().endswith('.pdf') and entry.is_file():
+                yield entry
+        except OSError:
+            continue
+
+
+def scan(db_path, folder, settle_seconds=10, retry_failed=False, progress=None, heartbeat=None, beat_seconds=5):
+    """Process new or changed PDFs.
+
+    progress, if given, receives each result as it happens; heartbeat receives the
+    count of PDFs checked every beat_seconds so long runs of unchanged files are visible.
+    """
     folder = Path(folder)
     if not folder.is_dir():
         raise ValueError(f'Report folder does not exist or is not a directory: {folder}')
+    # Resolve once; resolving every file is a slow round trip on mapped network drives.
+    root = folder.resolve()
+    next_beat = time.monotonic() + beat_seconds
     results = []
     db = connect(db_path)
     try:
         db.execute(LEDGER)
-        for path in sorted(folder.rglob('*')):
-            if not path.is_file() or path.suffix.lower() != '.pdf':
-                continue
-            name = str(path.resolve())
+        for checked, entry in enumerate(pdf_entries(folder)):
+            if heartbeat and time.monotonic() >= next_beat:
+                heartbeat(checked)
+                next_beat = time.monotonic() + beat_seconds
+            path = Path(entry.path)
+            name = str(root / path.relative_to(folder))
             try:
-                before = path.stat()
+                before = entry.stat()
                 if time.time() - before.st_mtime < settle_seconds:
                     continue
                 previous = db.execute('SELECT * FROM file_ingestion WHERE path=?', (name,)).fetchone()

@@ -158,7 +158,10 @@ def main():
         error = f" - {result['error']}" if result.get('error') else ''
         print(f"  [{processed}] {result['status']:<11} {name}{error}", flush=True)
 
-    results = scan(args.db, folder, settle, args.retry_failed, progress=show)
+    def still_scanning(pdfs):
+        print(f'  ...still scanning: {pdfs} PDFs checked so far', flush=True)
+
+    results = scan(args.db, folder, settle, args.retry_failed, progress=show, heartbeat=still_scanning)
     counts = Counter(result['status'] for result in results)
     summary = ', '.join(f'{count} {status}' for status, count in sorted(counts.items())) or 'no new or changed files'
     print(f'Initial scan finished in {time.monotonic() - started:.1f}s: {summary}.', flush=True)

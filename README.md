@@ -31,7 +31,7 @@ SCAN_INTERVAL_SECONDS=30
 FILE_SETTLE_SECONDS=10
 ```
 
-`REPORTS_DIR` is scanned recursively at startup and every configured interval while the server runs, including `.PDF` files. Paths are relative to the project directory unless absolute; quote paths containing spaces. The folder must already exist. Files must be old enough for the settling delay and remain unchanged during processing. For large archive transfers, copy to a temporary extension and rename to `.pdf` when complete.
+PDFs directly inside `REPORTS_DIR` are scanned at startup and every configured interval while the server runs, including `.PDF` files. Subfolders are not scanned. Paths are relative to the project directory unless absolute; quote paths containing spaces. The folder must already exist. Files must be old enough for the settling delay and remain unchanged during processing. For large archive transfers, copy to a temporary extension and rename to `.pdf` when complete.
 
 Use `HOST=127.0.0.1` for this computer, `HOST=0.0.0.0` to listen on all IPv4 interfaces, or an actual address assigned to this server, such as `192.168.1.50`. When listening on `0.0.0.0`, open the server's actual IP address in the browser; the startup message lists the addresses it detects. Changing `.env` requires restarting the app. The current app has no authentication, so binding to a network interface makes its reports and upload endpoint available to anyone who can reach that port.
 

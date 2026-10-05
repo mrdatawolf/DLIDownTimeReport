@@ -6,6 +6,11 @@ $exitCode = 1
 
 Push-Location -LiteralPath $PSScriptRoot
 try {
+    $versionFile = Join-Path $PSScriptRoot 'VERSION.txt'
+    $version = ''
+    if (Test-Path -LiteralPath $versionFile) { $version = ([string](Get-Content -LiteralPath $versionFile -Raw)).Trim() }
+    if (-not $version) { $version = 'unknown' }
+    Write-Host "Downtime Tracker version $version"
     $pythonCommand = $null
     $pythonPrefix = @()
     foreach ($candidate in @('py', 'python', 'python3')) {

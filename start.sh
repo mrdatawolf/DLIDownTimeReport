@@ -3,6 +3,9 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
+version=$(tr -d '[:space:]' 2>/dev/null < VERSION.txt || true)
+echo "Downtime Tracker version ${version:-unknown}"
+
 python_command=''
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1 &&
