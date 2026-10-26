@@ -31,7 +31,7 @@ SCAN_INTERVAL_SECONDS=30
 FILE_SETTLE_SECONDS=10
 ```
 
-PDFs directly inside `REPORTS_DIR` are scanned at startup and every configured interval while the server runs, including `.PDF` files. Subfolders are not scanned. Paths are relative to the project directory unless absolute; quote paths containing spaces. The folder must already exist. Files must be old enough for the settling delay and remain unchanged during processing. For large archive transfers, copy to a temporary extension and rename to `.pdf` when complete.
+PDFs directly inside `REPORTS_DIR` are scanned at startup and every configured interval while the server runs, including `.PDF` files. Subfolders are not scanned. Paths are relative to the project directory unless absolute; quote paths containing spaces. If the folder is unavailable at startup, see [Unavailable reports folder](#unavailable-reports-folder). Files must be old enough for the settling delay and remain unchanged during processing. For large archive transfers, copy to a temporary extension and rename to `.pdf` when complete.
 
 Use `HOST=127.0.0.1` for this computer, `HOST=0.0.0.0` to listen on all IPv4 interfaces, or an actual address assigned to this server, such as `192.168.1.50`. When listening on `0.0.0.0`, open the server's actual IP address in the browser; the startup message lists the addresses it detects. Changing `.env` requires restarting the app. The current app has no authentication, so binding to a network interface makes its reports and upload endpoint available to anyone who can reach that port.
 
@@ -48,6 +48,12 @@ python3 app.py --import-only --retry-failed
 ```
 
 `--import-only` performs one scan and exits; it does not keep watching. All imports and processing state survive restarts in `DB_PATH`. Keep that database when moving or expanding the archive. A file's processing status is separate from whether its report data was imported: `imported` and `duplicate` both mean the data is already present; `failed` means review is needed.
+
+## Unavailable reports folder
+
+At startup (including through `start.sh`, `start.bat`, and `start.ps1`) the app checks that `REPORTS_DIR` can be listed, allowing 10 seconds for a hung network mount. If it cannot, the dashboard still starts but folder imports are paused: no initial scan runs and the watcher stops scanning. The terminal explains why. When the folder is on an SMB share (a `\\server\share` or `//server/share` path, a mapped Windows drive, a Linux `cifs`/`smb3` mount or `/etc/fstab` entry, a macOS `smbfs` mount, or a GNOME `gvfs` share), it also reports whether the server name resolves, whether it answers ping, and whether SMB port 445 is reachable, with a likely cause.
+
+While paused, the watcher rechecks the folder every scan interval and resumes imports automatically once it is reachable. The Folder ingestion section of the dashboard shows the same details and a Recheck now button (`POST /api/imports/recheck`). If the share drops while running, the next failed scan pauses imports the same way. Uploading PDFs from the dashboard does not use `REPORTS_DIR` and keeps working. With `--import-only`, an unavailable folder exits with status 1 after the report.
 
 ## Reports and data
 
@@ -67,6 +73,6 @@ This server defaults to localhost. Shared deployment will need authentication an
 python3 -m unittest discover -s tests -v
 ```
 
-The tests exercise real sample PDFs, totals, production metrics, page continuation, filtering, duplicate imports, conflicting reports, invalid totals, persistent folder tracking, renamed PDFs, failed-file retries, file settling, and environment configuration.
+The tests exercise real sample PDFs, totals, production metrics, page continuation, filtering, duplicate imports, conflicting reports, invalid totals, persistent folder tracking, renamed PDFs, failed-file retries, file settling, environment configuration, and reports-folder availability checks.
 
-Useful endpoints: `GET /api/reports`, `GET /api/export.csv` (both accept `date`, `shift`, `from`, `to`, `min_downtime`, `max_downtime`, `min_availability`, `max_availability`, `min_logs`, and `min_board_feet` filters), `GET /api/source/{id}`, and `POST /api/import?filename=report.pdf` with a raw PDF body.
+Useful endpoints: `GET /api/reports`, `GET /api/export.csv` (both accept `date`, `shift`, `from`, `to`, `min_downtime`, `max_downtime`, `min_availability`, `max_availability`, `min_logs`, and `min_board_feet` filters), `GET /api/source/{id}`, `POST /api/import?filename=report.pdf` with a raw PDF body, and `POST /api/imports/recheck`.

@@ -10,3 +10,5 @@
 .trend-chart-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:18px;align-items:start}.trend-chart-row .pie-layout{gap:16px}.trend-chart-row .pie-layout>svg{width:240px}.trend-chart-row .pie-legend{min-width:180px}@media(max-width:900px){.trend-chart-row{grid-template-columns:1fr}}
 
 .graph-controls{display:flex;gap:18px;flex-wrap:wrap}.graph-controls .metric-selector{flex:1;min-width:180px}.chart-scroll{overflow-x:auto}.chart-scroll svg{display:block;width:100%}.chart-scroll [role="button"]{cursor:pointer}.chart-scroll [role="button"]:focus-visible{outline:3px solid #386baf;outline-offset:2px}#trend-detail button{margin:4px}
+
+.paused{background:#fbeee9;border:1px solid #e3b5a6;border-radius:12px;padding:16px 20px;margin:12px 0}.paused ul{margin:8px 0 12px;padding-left:20px}.paused li{margin:4px 0}#recheck-status{font-size:14px;color:#61736c}#recheck-status:empty{display:none}

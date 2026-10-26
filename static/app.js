@@ -74,7 +74,10 @@ async function loadIngestion() {
   const response=await fetch('/api/ingestion');
   if(!response.ok) throw new Error('Could not load ingestion status.');
   const data=await response.json();
-  $('folder').textContent='Watching: '+data.folder;
+  const paused=data.imports && !data.imports.enabled;
+  $('folder').textContent=(paused ? 'Paused: ' : 'Watching: ')+data.folder;
+  $('imports-paused').hidden=!paused;
+  if(paused) $('paused-detail').replaceChildren(...data.imports.detail.map(line=>element('li',line)));
   const counts={}; for(const file of data.files) counts[file.status]=(counts[file.status]||0)+1;
   $('ingestion-summary').textContent=Object.entries(counts).map(([status,count])=>`${count} ${status}`).join(' · ') || 'Waiting for stable PDF files.';
   $('ingestion').replaceChildren();
@@ -84,6 +87,17 @@ async function loadIngestion() {
     $('ingestion').append(row);
   }
 }
+$('recheck').addEventListener('click',async()=>{
+  $('recheck').disabled=true; $('recheck-status').textContent='Checking…';
+  try {
+    const response=await fetch('/api/imports/recheck',{method:'POST'});
+    if(!response.ok) throw new Error('Recheck failed.');
+    const result=await response.json();
+    $('recheck-status').textContent=result.enabled ? 'Reconnected. Folder imports resume on the next scan.' : 'Still unavailable (checked '+result.checked_at+' UTC).';
+    await loadIngestion();
+  } catch(e) { $('recheck-status').textContent=e.message; }
+  $('recheck').disabled=false;
+});
 loadIngestion().catch(e=>$('ingestion-summary').textContent=e.message);
 setInterval(()=>{
   load().catch(e=>$('status').textContent=e.message);

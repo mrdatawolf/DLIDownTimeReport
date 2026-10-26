@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from downtime.ingest import connect, ingest
 from downtime.reports import report
 from downtime.config import load_env, resolve_path
+from downtime.reports_dir import FolderImports
 from downtime.watcher import LEDGER, scan, watch
 
 ROOT = Path(__file__).resolve().parent
@@ -89,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == '/api/ingestion':
                 db.execute(LEDGER)
                 rows = [dict(r) for r in db.execute('SELECT * FROM file_ingestion ORDER BY checked_at DESC, path')]
-                self.send(json.dumps(dict(folder=str(self.server.report_dir), files=rows)))
+                self.send(json.dumps(dict(folder=str(self.server.imports.folder), imports=self.server.imports.status(), files=rows)))
             elif url.path.startswith('/api/source/'):
                 try:
                     row = db.execute('SELECT raw_text FROM documents WHERE id=?', (int(url.path.rsplit('/', 1)[1]),)).fetchone()
@@ -104,6 +105,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send('Not found', 'text/plain', 404)
 
     def do_POST(self):
+        if urlparse(self.path).path == '/api/imports/recheck':
+            self.server.imports.recheck()
+            return self.send(json.dumps(self.server.imports.status()))
         if urlparse(self.path).path != '/api/import':
             return self.send('{}', status=404)
         try:
@@ -125,6 +129,31 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.log_error('%s', exc)
             self.send(json.dumps(dict(error='Import failed; see server log.')), status=500)
+
+
+def initial_scan(db_path, folder, settle, retry_failed, import_only):
+    after = 'the app exits' if import_only else 'the server starts'
+    print(f'Scanning {folder} for new or changed PDF reports. Large folders can take a while; '
+          f'{after} when this finishes.', flush=True)
+    started = time.monotonic()
+    processed = 0
+
+    def show(result):
+        nonlocal processed
+        processed += 1
+        path = Path(result['path'])
+        name = path.relative_to(folder.resolve()) if path.is_relative_to(folder.resolve()) else path
+        error = f" - {result['error']}" if result.get('error') else ''
+        print(f"  [{processed}] {result['status']:<11} {name}{error}", flush=True)
+
+    def still_scanning(pdfs):
+        print(f'  ...still scanning: {pdfs} PDFs checked so far', flush=True)
+
+    results = scan(db_path, folder, settle, retry_failed, progress=show, heartbeat=still_scanning)
+    counts = Counter(result['status'] for result in results)
+    summary = ', '.join(f'{count} {status}' for status, count in sorted(counts.items())) or 'no new or changed files'
+    print(f'Initial scan finished in {time.monotonic() - started:.1f}s: {summary}.', flush=True)
+    return results
 
 
 def main():
@@ -152,34 +181,18 @@ def main():
         if not 1 <= args.port <= 65535 or not 1 <= interval < float('inf') or not 0 <= settle < float('inf'):
             raise ValueError('PORT must be 1–65535; scan interval at least 1 second; settle seconds nonnegative and finite.')
         folder = resolve_path(ROOT, str(args.import_dir or settings.get('REPORTS_DIR', 'Samples')))
-        if not folder.is_dir():
-            raise ValueError(f'Report folder does not exist: {folder}')
     except ValueError as exc:
         parser.error(str(exc))
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    after = 'the app exits' if args.import_only else 'the server starts'
-    print(f'Scanning {folder} for new or changed PDF reports. Large folders can take a while; '
-          f'{after} when this finishes.', flush=True)
-    started = time.monotonic()
-    processed = 0
-
-    def show(result):
-        nonlocal processed
-        processed += 1
-        path = Path(result['path'])
-        name = path.relative_to(folder.resolve()) if path.is_relative_to(folder.resolve()) else path
-        error = f" - {result['error']}" if result.get('error') else ''
-        print(f"  [{processed}] {result['status']:<11} {name}{error}", flush=True)
-
-    def still_scanning(pdfs):
-        print(f'  ...still scanning: {pdfs} PDFs checked so far', flush=True)
-
-    results = scan(args.db, folder, settle, args.retry_failed, progress=show, heartbeat=still_scanning)
-    counts = Counter(result['status'] for result in results)
-    summary = ', '.join(f'{count} {status}' for status, count in sorted(counts.items())) or 'no new or changed files'
-    print(f'Initial scan finished in {time.monotonic() - started:.1f}s: {summary}.', flush=True)
-    if args.import_only:
-        return 1 if any(r['status'] in ('failed', 'unavailable') for r in results) else 0
+    # An unreachable folder pauses folder imports instead of stopping the dashboard.
+    imports = FolderImports(folder)
+    if imports.recheck():
+        results = initial_scan(args.db, folder, settle, args.retry_failed, args.import_only)
+        if args.import_only:
+            return 1 if any(r['status'] in ('failed', 'unavailable') for r in results) else 0
+    elif args.import_only:
+        print('Nothing was imported.', file=sys.stderr, flush=True)
+        return 1
     ACCESS_LOG.parent.mkdir(exist_ok=True)
     log_file = RotatingFileHandler(ACCESS_LOG, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
     log_file.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
@@ -188,16 +201,19 @@ def main():
     access_log.propagate = False
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.db_path = args.db
-    server.report_dir = folder
+    server.imports = imports
     stop = threading.Event()
-    worker = threading.Thread(target=watch, args=(args.db, folder, interval, settle, stop), daemon=True)
+    worker = threading.Thread(target=watch, args=(args.db, imports, interval, settle, stop), daemon=True)
     worker.start()
     scope = ' (all IPv4 interfaces)' if args.host == '0.0.0.0' else ''
     urls = server_urls(args.host, args.port)
     print(f'\nDowntime Tracker is up, listening on {args.host}:{args.port}{scope}', flush=True)
     for label, url in zip(['Open:'] + [''] * len(urls), urls):
         print(f'  {label:<6}{url}', flush=True)
-    print(f'  Watching {folder} every {interval:g}s', flush=True)
+    if imports.enabled:
+        print(f'  Watching {folder} every {interval:g}s', flush=True)
+    else:
+        print(f'  Folder imports PAUSED: rechecking {folder} every {interval:g}s', flush=True)
     print(f'  Request log: {ACCESS_LOG}', flush=True)
     print('  Press Ctrl+C to stop.\n', flush=True)
     try:

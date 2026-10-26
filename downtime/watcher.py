@@ -94,10 +94,17 @@ def scan(db_path, folder, settle_seconds=10, retry_failed=False, progress=None, 
     return results
 
 
-def watch(db_path, folder, interval, settle_seconds, stop):
+def watch(db_path, imports, interval, settle_seconds, stop):
+    """Scan every interval while imports are enabled; otherwise recheck the folder until it returns."""
     while not stop.wait(interval):
+        if not imports.enabled and not imports.recheck(diagnose_failure=False):
+            continue
         try:
-            for result in scan(db_path, folder, settle_seconds):
+            results = scan(db_path, imports.folder, settle_seconds)
+            for result in results:
                 print(json.dumps(result), flush=True)
+            if any(result['status'] == 'unavailable' for result in results):
+                imports.recheck()
         except Exception as exc:
             print(json.dumps(dict(status='scan_error', error=str(exc))), flush=True)
+            imports.recheck()
